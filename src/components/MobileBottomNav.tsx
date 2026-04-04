@@ -28,6 +28,10 @@ const MobileBottomNav = ({ activePath }: MobileBottomNavProps) => {
   };
   const currentActive = activePath ?? getCurrentFullPath();
 
+  if (pathname === '/watch-room/screen') {
+    return null;
+  }
+
   const [navItems, setNavItems] = useState([
     { icon: Home, label: '首页', href: '/' },
     {

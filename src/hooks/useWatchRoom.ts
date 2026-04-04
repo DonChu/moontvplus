@@ -11,6 +11,8 @@ import type {
   Member,
   PlayState,
   Room,
+  RoomType,
+  ScreenState,
   StoredRoomInfo,
   WatchRoomConfig,
 } from '@/types/watch-room';
@@ -101,7 +103,7 @@ export function useWatchRoom(
 
   // 创建房间
   const createRoom = useCallback(
-    async (data: { name: string; description: string; password?: string; isPublic: boolean; userName: string }) => {
+    async (data: { name: string; description: string; password?: string; isPublic: boolean; roomType: RoomType; userName: string }) => {
       const sock = watchRoomSocketManager.getSocket();
       if (!sock || !watchRoomSocketManager.isConnected()) {
         throw new Error('Not connected');
@@ -295,6 +297,25 @@ export function useWatchRoom(
     [isOwner]
   );
 
+  // 开始屏幕共享
+  const startScreenShare = useCallback(
+    (state: ScreenState) => {
+      const sock = watchRoomSocketManager.getSocket();
+      if (!sock || !isOwner) return;
+
+      sock.emit('screen:start', state);
+    },
+    [isOwner]
+  );
+
+  // 停止屏幕共享
+  const stopScreenShare = useCallback(() => {
+    const sock = watchRoomSocketManager.getSocket();
+    if (!sock || !isOwner) return;
+
+    sock.emit('screen:stop');
+  }, [isOwner]);
+
   // 清除房间播放状态（房主离开播放/直播页面时调用）
   const clearRoomState = useCallback(() => {
     const sock = watchRoomSocketManager.getSocket();
@@ -362,6 +383,19 @@ export function useWatchRoom(
       }
     });
 
+    // 屏幕共享事件
+    socket.on('screen:start', (state) => {
+      if (currentRoom) {
+        setCurrentRoom((prev) => (prev ? { ...prev, currentState: state } : null));
+      }
+    });
+
+    socket.on('screen:stop', () => {
+      if (currentRoom) {
+        setCurrentRoom((prev) => (prev ? { ...prev, currentState: null } : null));
+      }
+    });
+
     // 聊天事件
     socket.on('chat:message', (message) => {
       setChatMessages((prev) => [...prev, message]);
@@ -395,6 +429,8 @@ export function useWatchRoom(
       socket.off('play:update');
       socket.off('play:change');
       socket.off('live:change');
+      socket.off('screen:start');
+      socket.off('screen:stop');
       socket.off('chat:message');
       socket.off('state:cleared');
       socket.off('connect');
@@ -431,6 +467,8 @@ export function useWatchRoom(
     pause,
     changeVideo,
     changeLiveChannel,
+    startScreenShare,
+    stopScreenShare,
     clearRoomState,
   };
 }

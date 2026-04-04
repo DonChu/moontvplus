@@ -2,6 +2,7 @@
 'use client';
 
 import React, { createContext, useCallback,useContext, useEffect, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 
 import { useWatchRoom } from '@/hooks/useWatchRoom';
 
@@ -9,7 +10,7 @@ import Toast, { ToastProps } from '@/components/Toast';
 
 import { getAuthInfoFromBrowserCookie } from '@/lib/auth';
 
-import type { ChatMessage, Member, Room, WatchRoomConfig } from '@/types/watch-room';
+import type { ChatMessage, Member, Room, RoomType, ScreenState, WatchRoomConfig } from '@/types/watch-room';
 
 // Import type from watch-room-socket
 type WatchRoomSocket = import('@/lib/watch-room-socket').WatchRoomSocket;
@@ -31,6 +32,7 @@ interface WatchRoomContextType {
     description: string;
     password?: string;
     isPublic: boolean;
+    roomType: RoomType;
     userName: string;
   }) => Promise<Room>;
   joinRoom: (data: {
@@ -51,6 +53,8 @@ interface WatchRoomContextType {
   pause: () => void;
   changeVideo: (state: any) => void;
   changeLiveChannel: (state: any) => void;
+  startScreenShare: (state: ScreenState) => void;
+  stopScreenShare: () => void;
   clearRoomState: () => void;
 
   // 重连
@@ -77,6 +81,7 @@ interface WatchRoomProviderProps {
 }
 
 export function WatchRoomProvider({ children }: WatchRoomProviderProps) {
+  const searchParams = useSearchParams();
   const [config, setConfig] = useState<WatchRoomConfig | null>(null);
   const [isEnabled, setIsEnabled] = useState(false);
   const [toast, setToast] = useState<ToastProps | null>(null);
@@ -118,6 +123,7 @@ export function WatchRoomProvider({ children }: WatchRoomProviderProps) {
   }, []);
 
   const watchRoom = useWatchRoom(handleRoomDeleted, handleStateCleared);
+  const shouldDisableWatchRoomConnection = searchParams.get('watchRoomNoConnect') === '1';
 
   // 检查登录状态
   useEffect(() => {
@@ -169,6 +175,15 @@ export function WatchRoomProvider({ children }: WatchRoomProviderProps) {
 
   // 加载配置
   useEffect(() => {
+    if (shouldDisableWatchRoomConnection) {
+      setConfig({
+        enabled: false,
+        serverType: 'internal',
+      });
+      setIsEnabled(false);
+      return;
+    }
+
     const loadConfig = async () => {
       try {
         // 使用公共 API 获取观影室配置（不需要管理员权限）
@@ -253,12 +268,14 @@ export function WatchRoomProvider({ children }: WatchRoomProviderProps) {
     };
 
     loadConfig();
+  }, [isLoggedIn, shouldDisableWatchRoomConnection]); // 添加 isLoggedIn 作为依赖
 
-    // 清理
+  // 仅在 Provider 卸载时断开，避免路由切换时误断开房间连接
+  useEffect(() => {
     return () => {
       watchRoom.disconnect();
     };
-  }, [isLoggedIn]); // 添加 isLoggedIn 作为依赖
+  }, []);
 
   const contextValue: WatchRoomContextType = {
     socket: watchRoom.socket,
@@ -281,6 +298,8 @@ export function WatchRoomProvider({ children }: WatchRoomProviderProps) {
     pause: watchRoom.pause,
     changeVideo: watchRoom.changeVideo,
     changeLiveChannel: watchRoom.changeLiveChannel,
+    startScreenShare: watchRoom.startScreenShare,
+    stopScreenShare: watchRoom.stopScreenShare,
     clearRoomState: watchRoom.clearRoomState,
     manualReconnect,
   };

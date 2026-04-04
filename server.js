@@ -32,6 +32,8 @@ class WatchRoomServer {
     this.rooms = new Map();
     this.members = new Map();
     this.socketToRoom = new Map();
+    this.screenHelpers = new Map();
+    this.helperToRoom = new Map();
     this.roomDeletionTimers = new Map(); // 房间延迟删除定时器
     this.cleanupInterval = null;
     this.setupEventHandlers();
@@ -55,6 +57,7 @@ class WatchRoomServer {
             description: data.description,
             password: data.password,
             isPublic: data.isPublic,
+            roomType: data.roomType || 'sync',
             ownerId: userId,
             ownerName: data.userName,
             ownerToken: ownerToken, // 保存房主令牌
@@ -260,6 +263,114 @@ class WatchRoomServer {
         }
       });
 
+      socket.on('screen:helper-register', (data, callback) => {
+        try {
+          const room = this.rooms.get(data.roomId);
+          if (!room) {
+            callback({ success: false, error: '房间不存在' });
+            return;
+          }
+
+          if (room.ownerToken !== data.ownerToken) {
+            callback({ success: false, error: '房主身份验证失败' });
+            return;
+          }
+
+          const oldHelperSocketId = this.screenHelpers.get(data.roomId);
+          if (oldHelperSocketId && oldHelperSocketId !== socket.id) {
+            this.helperToRoom.delete(oldHelperSocketId);
+          }
+
+          this.screenHelpers.set(data.roomId, socket.id);
+          this.helperToRoom.set(socket.id, data.roomId);
+          callback({ success: true });
+        } catch (error) {
+          console.error('[WatchRoom] Error registering screen helper:', error);
+          callback({ success: false, error: '注册共享控制窗口失败' });
+        }
+      });
+
+      // 开始屏幕共享
+      socket.on('screen:start', (state) => {
+        const roomInfo = this.socketToRoom.get(socket.id);
+        const helperRoomId = this.helperToRoom.get(socket.id);
+        const roomId = roomInfo?.roomId || helperRoomId;
+        if (!roomId) return;
+        if (helperRoomId && this.screenHelpers.get(helperRoomId) !== socket.id) return;
+        if (roomInfo && !roomInfo.isOwner) return;
+
+        const room = this.rooms.get(roomId);
+        if (room) {
+          room.currentState = state;
+          this.rooms.set(roomId, room);
+          this.io.to(roomId).emit('screen:start', state);
+        }
+      });
+
+      // 停止屏幕共享
+      socket.on('screen:stop', () => {
+        const roomInfo = this.socketToRoom.get(socket.id);
+        const helperRoomId = this.helperToRoom.get(socket.id);
+        const roomId = roomInfo?.roomId || helperRoomId;
+        if (!roomId) return;
+        if (helperRoomId && this.screenHelpers.get(helperRoomId) !== socket.id) return;
+        if (roomInfo && !roomInfo.isOwner) return;
+
+        const room = this.rooms.get(roomId);
+        if (room) {
+          room.currentState = null;
+          this.rooms.set(roomId, room);
+          this.io.to(roomId).emit('screen:stop');
+        }
+      });
+
+      socket.on('screen:viewer-ready', () => {
+        const roomInfo = this.socketToRoom.get(socket.id);
+        if (!roomInfo) return;
+
+        const room = this.rooms.get(roomInfo.roomId);
+        if (!room || roomInfo.isOwner || room.currentState?.type !== 'screen') return;
+
+        const targetSocketId = this.screenHelpers.get(roomInfo.roomId) || room.ownerId;
+        this.io.to(targetSocketId).emit('screen:viewer-ready', {
+          userId: socket.id,
+        });
+      });
+
+      // 屏幕共享 WebRTC 信令
+      socket.on('screen:offer', (data) => {
+        const roomInfo = this.socketToRoom.get(socket.id);
+        const helperRoomId = this.helperToRoom.get(socket.id);
+        if (!roomInfo && !helperRoomId) return;
+
+        this.io.to(data.targetUserId).emit('screen:offer', {
+          userId: socket.id,
+          offer: data.offer,
+        });
+      });
+
+      socket.on('screen:answer', (data) => {
+        const roomInfo = this.socketToRoom.get(socket.id);
+        const helperRoomId = this.helperToRoom.get(socket.id);
+        if (!roomInfo && !helperRoomId) return;
+
+        this.io.to(data.targetUserId).emit('screen:answer', {
+          userId: socket.id,
+          answer: data.answer,
+        });
+      });
+
+      socket.on('screen:ice', (data) => {
+        const roomInfo = this.socketToRoom.get(socket.id);
+        const helperRoomId = this.helperToRoom.get(socket.id);
+        if (!roomInfo && !helperRoomId) return;
+
+        this.io.to(data.targetUserId).emit('screen:ice', {
+          userId: socket.id,
+          candidate: data.candidate,
+        });
+      });
+
       // 聊天消息
       socket.on('chat:message', (data) => {
         const roomInfo = this.socketToRoom.get(socket.id);
@@ -347,6 +458,19 @@ class WatchRoomServer {
       // 断开连接
       socket.on('disconnect', () => {
         console.log(`[WatchRoom] Client disconnected: ${socket.id}`);
+        const helperRoomId = this.helperToRoom.get(socket.id);
+        if (helperRoomId) {
+          this.helperToRoom.delete(socket.id);
+          if (this.screenHelpers.get(helperRoomId) === socket.id) {
+            this.screenHelpers.delete(helperRoomId);
+            const room = this.rooms.get(helperRoomId);
+            if (room && room.currentState?.type === 'screen') {
+              room.currentState = null;
+              this.rooms.set(helperRoomId, room);
+              this.io.to(helperRoomId).emit('screen:stop');
+            }
+          }
+        }
         this.handleLeaveRoom(socket);
       });
     });
@@ -425,6 +549,11 @@ class WatchRoomServer {
 
     this.rooms.delete(roomId);
     this.members.delete(roomId);
+    const helperSocketId = this.screenHelpers.get(roomId);
+    if (helperSocketId) {
+      this.helperToRoom.delete(helperSocketId);
+      this.screenHelpers.delete(roomId);
+    }
   }
 
   startCleanupTimer() {
